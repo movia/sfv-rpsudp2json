@@ -13,8 +13,7 @@
     <PackageReference Include="Nlog" Version="4.6.7" />
     <PackageReference Include="NLog.Extensions.Logging" Version="1.6.0" />
     <PackageReference Include="NLog.Schema" Version="4.6.7" />
-    <PackageReference Include="Polly" Version="7.1.1" />
-    <PackageReference Include="RabbitMQ.Client" Version="5.1.1" />
+    <PackageReference Include="RabbitMQ.Client" Version="5.1.2" />
     <PackageReference Include="Topshelf" Version="4.2.1" />
     <PackageReference Include="Topshelf.NLog" Version="4.2.1" />
   </ItemGroup>

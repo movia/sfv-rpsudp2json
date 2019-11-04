@@ -1,42 +1,50 @@
 ﻿using System;
-using System.Threading;
 using System.Collections.Generic;
 using System.Text;
-using Polly;
-using Microsoft.Extensions.Logging;
-using RabbitMQ.Client;
-using Microsoft.Extensions.Configuration;
-using RabbitMQ.Client.Events;
+using System.Threading;
 using System.Threading.Tasks;
-using VehicleTracker.Contracts;
+
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
+
 using Newtonsoft.Json;
+
+using RabbitMQ.Client;
+using RabbitMQ.Client.Events;
+
+using VehicleTracker.Contracts;
 
 namespace RpsUdpToJson
 {
-    public class RpsUdpToJsonWorker
+    public class RpsUdpToJsonWorker : RetryWorker
     {
-        private ILogger<RpsUdpToJsonWorker> logger;
-        private IConfiguration config;
-        private UdpConverter udpConverter;
+        private readonly Service serviceHost;
+        private readonly ILogger<RpsUdpToJsonWorker> logger;
+        private readonly IConfiguration config;
+        private readonly UdpConverter udpConverter;
 
-        private CancellationTokenSource cancellationTokenSource;
-        private CancellationToken cancellationToken;
+        private IConnection connection;
+        private IModel channel;
+        private EventingBasicConsumer consumer;
 
-        public RpsUdpToJsonWorker(ILogger<RpsUdpToJsonWorker> logger, IConfiguration config, UdpConverter udpConverter)
+        public RpsUdpToJsonWorker(Service serviceHost, ILogger<RpsUdpToJsonWorker> logger, IConfiguration config, UdpConverter udpConverter)
+            : base(serviceHost, logger, config, null)
         {
+            this.serviceHost = serviceHost;
             this.logger = logger;
             this.config = config;
             this.udpConverter = udpConverter;
         }
 
-        private async Task Work()
+        protected override async Task Work()
         {
             var url = config.GetSection("RabbitMQ")?.GetValue<string>("Url");
             logger.LogInformation($"Connecting to url: {url}");
             var factory = new ConnectionFactory() { Uri = new Uri(url) };
-            using var connection = factory.CreateConnection();
-            using var channel = connection.CreateModel();
+            connection = factory.CreateConnection();
+            channel = connection.CreateModel();
 
+            var lastMessageProcessed = DateTime.UtcNow;
             var udpExchange = "vehicle-position-udp-raw";
             var jsonExchange = "vehicle-position-json";
             var workQueue = "rpsudp2json-vehicle-position-udp-raw";
@@ -47,7 +55,7 @@ namespace RpsUdpToJson
             channel.QueueDeclare(workQueue, durable: true, exclusive: false, autoDelete: false, arguments);
             channel.QueueBind(workQueue, udpExchange, string.Empty);
 
-            var consumer = new EventingBasicConsumer(channel);
+            consumer = new EventingBasicConsumer(channel);
             consumer.Received += (model, ea) =>
             {
                 var bytes = ea.Body;
@@ -67,6 +75,7 @@ namespace RpsUdpToJson
                             var routingKey = $"{vehiclePositonEvent.EventType}.{vehiclePositon.VehicleRef}";
 
                             channel.BasicPublish(jsonExchange, routingKey, body: Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(vehiclePositonEvent)));
+                            //ResetWatchdog();
                         }
                         break;
                     case 255:
@@ -77,29 +86,14 @@ namespace RpsUdpToJson
                         break;
                 }
             };
+
+            logger.LogInformation($"Beginning to consume ...");
+
             channel.BasicConsume(queue: workQueue,
                                  autoAck: true,
                                  consumer: consumer);
 
-            await Task.Run(() => cancellationToken.WaitHandle.WaitOne());
-            logger.LogInformation($"Cancel consumer ({consumer.ConsumerTag})");
-            channel.BasicCancel(consumer.ConsumerTag);
-        }
-
-        public void Start()
-        {
-            cancellationTokenSource = new CancellationTokenSource();
-            cancellationToken = cancellationTokenSource.Token;
-
-            Policy
-                .Handle<Exception>()
-                .WaitAndRetryForever(retryAttempt => TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)), (ex, retryCount, timeSpan) => logger.LogError(ex, $"Worker failed. Retrying attempt {retryCount} in {timeSpan}"))
-                .Execute(Work);
-        }
-
-        public void Stop()
-        {
-            cancellationTokenSource.Cancel();
+            await serviceHost.CancellationToken.WaitHandle.WaitOneAsync(CancellationToken.None);
         }
     }
 }

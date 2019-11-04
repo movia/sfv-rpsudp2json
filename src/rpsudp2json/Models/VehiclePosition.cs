@@ -24,7 +24,13 @@ namespace VehicleTracker.Contracts
 
         [JsonProperty("timestamp")]
         public DateTime Timestamp { get; set; }
-        
+
+        [JsonProperty("journeyRef", NullValueHandling = NullValueHandling.Ignore)]
+        public string JourneyRef { get; set; }
+
+        [JsonProperty("sourceJourneyRef", NullValueHandling = NullValueHandling.Ignore)]
+        public string SourceJourneyRef { get; set; }
+
         public override string ToString()
         {
             return $"{VehicleRef} @ {Position}";

@@ -41,7 +41,7 @@ namespace RpsUdpToJson
 
                     // Time - ms since UTC midnight */
                     var timestamp = reader.ReadUInt32();
-                    var sendDateTime = DateTime.UtcNow.Date.AddDays(timestamp > 86400000 / 2 && DateTime.Now.TimeOfDay.TotalMilliseconds < 86400000 / 2 ? -1 : 0).AddMilliseconds(timestamp);
+                    var sendDateTime = DateTime.UtcNow.Date.AddDays(timestamp > 86400000 / 2 && DateTime.UtcNow.TimeOfDay.TotalMilliseconds < 86400000 / 2 ? -1 : 0).AddMilliseconds(timestamp);
                     vehiclePositon.Timestamp = sendDateTime;
 
                     vehiclePositon.Position = new Position();
@@ -103,7 +103,7 @@ namespace RpsUdpToJson
 
                     // 15		Yes	Service Journey Id	String	See 4.2.11.
                     if (serviceJourneyIdLength > 0)
-                        Encoding.ASCII.GetString(reader.ReadBytes(serviceJourneyIdLength));
+                        vehiclePositon.SourceJourneyRef = Encoding.ASCII.GetString(reader.ReadBytes(serviceJourneyIdLength));
 
                     // L16		No	Length of field 16	Byte	0-255	Number of bytes.
                     var accountIdLength = reader.ReadByte();

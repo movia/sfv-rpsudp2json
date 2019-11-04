@@ -28,6 +28,7 @@ namespace RpsUdpToJson
                })
                .AddTransient<UdpConverter>()
                .AddTransient<RpsUdpToJsonWorker>()
+               .AddSingleton<Service>()
                .BuildServiceProvider();
         }
 
@@ -36,10 +37,12 @@ namespace RpsUdpToJson
             var logger = LogManager.GetCurrentClassLogger();
             try
             {
+                var environmentName = Environment.GetEnvironmentVariable("ENVIRONMENT");
+
                 var config = new ConfigurationBuilder()
                    .SetBasePath(Path.GetDirectoryName(System.Reflection.Assembly.GetEntryAssembly().Location))
                    .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
-                   .AddJsonFile("appsettings.{environmentName}.json", optional: true, reloadOnChange: true)
+                   .AddJsonFile($"appsettings.{environmentName}.json", optional: true, reloadOnChange: true)
                    .Build();
 
                 var servicesProvider = ConfigureServices(config);
@@ -47,8 +50,8 @@ namespace RpsUdpToJson
                 {
                     var rc = HostFactory.Run(x =>
                     {
-                        x.Service<RpsUdpToJsonWorker>(s => {
-                            s.ConstructUsing(name => servicesProvider.GetService<RpsUdpToJsonWorker>());
+                        x.Service<Service>(s => {
+                            s.ConstructUsing(name => servicesProvider.GetService<Service>());
                             s.WhenStarted(tc => tc.Start());
                             s.WhenStopped(tc => tc.Stop());
                         });
