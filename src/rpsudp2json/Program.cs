@@ -10,6 +10,7 @@ using NLog;
 using NLog.Extensions.Logging;
 
 using Topshelf;
+using VehicleTracker.Contracts;
 
 namespace RpsUdpToJson
 {
@@ -28,6 +29,8 @@ namespace RpsUdpToJson
                })
                .AddTransient<UdpConverter>()
                .AddTransient<RpsUdpToJsonWorker>()
+               .AddTransient<VehicleJourneyAssignmentLoaderWorker>()
+               .AddSingleton<IVehicleJourneyAssignmentCache, InMemoryVehicleJourneyAssignmentCache>()
                .AddSingleton<Service>()
                .BuildServiceProvider();
         }

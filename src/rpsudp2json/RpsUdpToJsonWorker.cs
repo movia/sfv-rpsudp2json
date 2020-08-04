@@ -21,18 +21,20 @@ namespace RpsUdpToJson
         private readonly Service serviceHost;
         private readonly ILogger<RpsUdpToJsonWorker> logger;
         private readonly IConfiguration config;
+        private readonly IVehicleJourneyAssignmentCache vehicleJourneyAssignmentCache;
         private readonly UdpConverter udpConverter;
 
         private IConnection connection;
         private IModel channel;
         private EventingBasicConsumer consumer;
 
-        public RpsUdpToJsonWorker(Service serviceHost, ILogger<RpsUdpToJsonWorker> logger, IConfiguration config, UdpConverter udpConverter)
-            : base(serviceHost, logger, config, null)
+        public RpsUdpToJsonWorker(Service serviceHost, ILogger<RpsUdpToJsonWorker> logger, IConfiguration config, IVehicleJourneyAssignmentCache vehicleJourneyAssignmentCache, UdpConverter udpConverter)
+            : base(serviceHost, logger)
         {
             this.serviceHost = serviceHost;
             this.logger = logger;
             this.config = config;
+            this.vehicleJourneyAssignmentCache = vehicleJourneyAssignmentCache;
             this.udpConverter = udpConverter;
         }
 
@@ -49,8 +51,10 @@ namespace RpsUdpToJson
             var jsonExchange = "vehicle-position-json";
             var workQueue = "rpsudp2json-vehicle-position-udp-raw";
 
-            var arguments = new Dictionary<string, object>();
-            arguments.Add("x-message-ttl", 3 * 60 * 60 * 1000); // 3 hours
+            var arguments = new Dictionary<string, object>
+            {
+                { "x-message-ttl", 3 * 60 * 60 * 1000 } // 3 hours
+            };
             channel.ExchangeDeclare(jsonExchange, "fanout", durable: true, autoDelete: false);
             channel.QueueDeclare(workQueue, durable: true, exclusive: false, autoDelete: false, arguments);
             channel.QueueBind(workQueue, udpExchange, string.Empty);
@@ -70,12 +74,15 @@ namespace RpsUdpToJson
                 {
                     case 2:
                         if (udpConverter.TryParseVehiclePosition(bytes, out var vehiclePositon))
-                        {                            
+                        {
+                            if (vehicleJourneyAssignmentCache.TryGet(vehiclePositon.VehicleRef, out VehicleJourneyAssignment journeyAssignment) && journeyAssignment.InvalidFromUtc == null)
+                                vehiclePositon.JourneyRef = journeyAssignment.JourneyRef;
+
                             var vehiclePositonEvent = new VehiclePositionEvent() { VehiclePosition = vehiclePositon };
                             var routingKey = $"{vehiclePositonEvent.EventType}.{vehiclePositon.VehicleRef}";
 
                             channel.BasicPublish(jsonExchange, routingKey, body: Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(vehiclePositonEvent)));
-                            //ResetWatchdog();
+                            ResetWatchdog();
                         }
                         break;
                     case 255:

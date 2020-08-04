@@ -15,23 +15,19 @@ namespace RpsUdpToJson
     public abstract class RetryWorker
     {
         private readonly ILogger logger;
-        private readonly IConfiguration config;
-        private readonly IConfigurationSection configSection;
         private readonly CancellationToken cancellationToken;
-        
-        private TimeSpan WatchDogWakeupInterval { get; set; } = TimeSpan.FromSeconds(5);
-        private TimeSpan WatchDogTimeout { get; set; } = TimeSpan.FromSeconds(30);
-        private TimeSpan MaxDelay { get; set; } = TimeSpan.FromMinutes(15);
+
+        public TimeSpan WatchDogWakeupInterval { get; protected set; } = TimeSpan.FromSeconds(5);
+        public TimeSpan WatchDogTimeout { get; protected set; } = TimeSpan.FromSeconds(30);
+        public TimeSpan MaxDelay { get; protected set; } = TimeSpan.FromMinutes(15);
 
         private int retryAttempt = 0;
         private readonly Stopwatch watchDogTimer = new Stopwatch();
         private ManualResetEventSlim manualRestart;
 
-        public RetryWorker(Service serviceHost, ILogger logger, IConfiguration config, IConfigurationSection configSection)
+        public RetryWorker(Service serviceHost, ILogger logger)
         {
             this.logger = logger;
-            this.config = config;
-            this.configSection = configSection;
             this.cancellationToken = serviceHost.CancellationToken;
         }
 
@@ -51,7 +47,7 @@ namespace RpsUdpToJson
                 }
                 else if (watchDogTimer.Elapsed > WatchDogTimeout)
                 {
-                    logger.LogInformation($"No new messages for {watchDogTimer.Elapsed }. Watch dog is trying to restart...");
+                    logger.LogInformation($"No new messages for {watchDogTimer.Elapsed}. Watch dog is trying to restart...");
                     throw new ApplicationException("Watch dog triggered restart.");
                 }
             }

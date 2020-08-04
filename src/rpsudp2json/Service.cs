@@ -1,19 +1,15 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.Extensions.Configuration;
+
 using Microsoft.Extensions.Logging;
-using RabbitMQ.Client;
-using RabbitMQ.Client.Events;
 
 namespace RpsUdpToJson
 {
     public class Service
     {
         private readonly ILogger<Service> logger;
-        private readonly IConfiguration config;
         private readonly IServiceProvider serviceProvider;
 
         private readonly CancellationTokenSource cancellationTokenSource;        
@@ -21,10 +17,9 @@ namespace RpsUdpToJson
 
         public CancellationToken CancellationToken => cancellationTokenSource.Token;
 
-        public Service(ILogger<Service> logger, IConfiguration config, IServiceProvider serviceProvider)
+        public Service(ILogger<Service> logger, IServiceProvider serviceProvider)
         {
             this.logger = logger;
-            this.config = config;
             this.serviceProvider = serviceProvider;
 
             cancellationTokenSource = new CancellationTokenSource();
@@ -33,17 +28,17 @@ namespace RpsUdpToJson
 
         private void AddWorker<T>(string name = null) where T : RetryWorker
         {
-            name = name ?? typeof(T).Name;
+            name ??= typeof(T).Name;
             logger.LogInformation($"Service is starting worker '{name}'");
             var worker = (T)serviceProvider.GetService(typeof(T));
             var task = Task.Factory.StartNew(async () => await worker.RetryWork(), TaskCreationOptions.LongRunning);
             tasks.Add(task);
-
         }
 
         public void Start()
         {
             logger.LogInformation("Service is starting.");
+            AddWorker<VehicleJourneyAssignmentLoaderWorker>();
             AddWorker<RpsUdpToJsonWorker>();
         }
 
