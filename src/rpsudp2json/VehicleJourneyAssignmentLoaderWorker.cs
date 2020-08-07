@@ -50,7 +50,7 @@ namespace RpsUdpToJson
         protected override async Task Work(CancellationToken cancellationToken)
         {
             logger.LogInformation($"Connecting to RabbitMQ: {rabbitConnectionFactory.Uri}");
-            rabbitConnection = rabbitConnectionFactory.CreateConnection(nameof(PersistentVehicleJourneyAssignmentWorker));
+            rabbitConnection = rabbitConnectionFactory.CreateConnection(nameof(VehicleJourneyAssignmentLoaderWorker));
             rabbitChannel = rabbitConnection.CreateModel();
 
             // The incomming exchange of ROI events.
@@ -74,7 +74,7 @@ namespace RpsUdpToJson
                 eventType: "vehicleJourneyAssignment",
                 logger: logger);
 
-            // Wait for initial load to complete in PersistentVehicleJourneyAssignmentWorker
+            // TODO: Wait for initial load to complete in PersistentVehicleJourneyAssignmentWorker
 
             logger.LogInformation($"Beginning to consume {workQueue}...");
 
