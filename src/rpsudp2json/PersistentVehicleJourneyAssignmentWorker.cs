@@ -113,10 +113,10 @@ namespace RpsUdpToJson
             channel.QueueDeclare(persistentQueue, durable: true, exclusive: false, autoDelete: false, arguments);
             channel.QueueBind(persistentQueue, roiExchange, "vehicleJourneyAssignment.#");
 
-            var persistentVehicleJourneyAssignmentQueue = new AsyncEventConsumer<VehicleJourneyAssignmentEvent>(
-                action: async e =>
+            var persistentVehicleJourneyAssignmentQueue = new EventConsumer<VehicleJourneyAssignmentEvent>(
+                action: e =>
                 {
-                    await table.ExecuteAsync(
+                    table.Execute(
                         TableOperation.InsertOrReplace(e.VehicleJourneyAssignment.ToTableEntity())
                     );
                     ResetWatchdog();
