@@ -21,61 +21,81 @@ namespace RpsUdpToJson
         private readonly Service serviceHost;
         private readonly ILogger<RpsUdpToJsonWorker> logger;
         private readonly IConfiguration config;
+        private readonly IVehicleJourneyAssignmentCache vehicleJourneyAssignmentCache;
         private readonly UdpConverter udpConverter;
 
-        private IConnection connection;
-        private IModel channel;
-        private EventingBasicConsumer consumer;
+        private ConnectionFactory? rabbitConnectionFactory;
+        private IConnection? rabbitConnection = null;
+        private IModel? rabbitChannel = null;
+        private EventingBasicConsumer? consumer;
 
-        public RpsUdpToJsonWorker(Service serviceHost, ILogger<RpsUdpToJsonWorker> logger, IConfiguration config, UdpConverter udpConverter)
-            : base(serviceHost, logger, config, null)
+        private readonly string udpExchange = "vehicle-position-udp-raw";
+        private readonly string jsonExchange = "vehicle-position-json";
+        private readonly string workQueue = "rpsudp2json-vehicle-position-udp-raw";
+
+        public RpsUdpToJsonWorker(Service serviceHost, ILogger<RpsUdpToJsonWorker> logger, IConfiguration config, IVehicleJourneyAssignmentCache vehicleJourneyAssignmentCache, UdpConverter udpConverter)
+            : base(serviceHost, logger)
         {
             this.serviceHost = serviceHost;
             this.logger = logger;
             this.config = config;
+            this.vehicleJourneyAssignmentCache = vehicleJourneyAssignmentCache;
             this.udpConverter = udpConverter;
         }
 
-        protected override async Task Work()
+        protected override void Configure()
         {
-            var url = config.GetSection("RabbitMQ")?.GetValue<string>("Url");
-            logger.LogInformation($"Connecting to url: {url}");
-            var factory = new ConnectionFactory() { Uri = new Uri(url) };
-            connection = factory.CreateConnection();
-            channel = connection.CreateModel();
+            try
+            {
+                var url = config.GetValue<string>("RabbitMQ:Url");
+                rabbitConnectionFactory = new ConnectionFactory() { Uri = new Uri(url) };
+            }
+            catch (Exception ex)
+            {
+                throw new ConfigurationException("Invalid configuration provided. Please confirm the RabbitMQ:Url configuration.", ex);
+            }
 
-            var lastMessageProcessed = DateTime.UtcNow;
-            var udpExchange = "vehicle-position-udp-raw";
-            var jsonExchange = "vehicle-position-json";
-            var workQueue = "rpsudp2json-vehicle-position-udp-raw";
+            WatchDogTimeout = TimeSpan.FromMinutes(30);
+        }
 
-            var arguments = new Dictionary<string, object>();
-            arguments.Add("x-message-ttl", 3 * 60 * 60 * 1000); // 3 hours
-            channel.ExchangeDeclare(jsonExchange, "fanout", durable: true, autoDelete: false);
-            channel.QueueDeclare(workQueue, durable: true, exclusive: false, autoDelete: false, arguments);
-            channel.QueueBind(workQueue, udpExchange, string.Empty);
+        protected override async Task Work(CancellationToken cancellationToken)
+        {
+            logger.LogInformation($"Connecting to RabbitMQ: {rabbitConnectionFactory.Uri}");
+            rabbitConnection = rabbitConnectionFactory.CreateConnection(nameof(RpsUdpToJsonWorker));
+            rabbitChannel = rabbitConnection.CreateModel();
 
-            consumer = new EventingBasicConsumer(channel);
+            var arguments = new Dictionary<string, object>
+            {
+                { "x-message-ttl", 3 * 60 * 60 * 1000 } // 3 hours
+            };
+            rabbitChannel.ExchangeDeclare(jsonExchange, "fanout", durable: true, autoDelete: false);
+            rabbitChannel.QueueDeclare(workQueue, durable: true, exclusive: false, autoDelete: false, arguments);
+            rabbitChannel.QueueBind(workQueue, udpExchange, string.Empty);
+
+            consumer = new EventingBasicConsumer(rabbitChannel);
             consumer.Received += (model, ea) =>
             {
-                var bytes = ea.Body;
-
-                if (bytes == null || bytes.Length == 0)
+                if (ea.Body.IsEmpty)
                 {
                     logger.LogTrace("Recived empty position message");
                     return;
                 }
 
+                var bytes = ea.Body.ToArray();
+
                 switch (bytes[0])
                 {
                     case 2:
                         if (udpConverter.TryParseVehiclePosition(bytes, out var vehiclePositon))
-                        {                            
+                        {
+                            if (vehicleJourneyAssignmentCache.TryGet(vehiclePositon.VehicleRef, out VehicleJourneyAssignment journeyAssignment) && journeyAssignment.InvalidFromUtc == null)
+                                vehiclePositon.JourneyRef = journeyAssignment.JourneyRef;
+
                             var vehiclePositonEvent = new VehiclePositionEvent() { VehiclePosition = vehiclePositon };
                             var routingKey = $"{vehiclePositonEvent.EventType}.{vehiclePositon.VehicleRef}";
 
-                            channel.BasicPublish(jsonExchange, routingKey, body: Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(vehiclePositonEvent)));
-                            //ResetWatchdog();
+                            rabbitChannel.BasicPublish(jsonExchange, routingKey, body: Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(vehiclePositonEvent)));
+                            ResetWatchdog();
                         }
                         break;
                     case 255:
@@ -87,13 +107,22 @@ namespace RpsUdpToJson
                 }
             };
 
-            logger.LogInformation($"Beginning to consume ...");
+            logger.LogInformation($"Beginning to consume {workQueue}...");
 
-            channel.BasicConsume(queue: workQueue,
-                                 autoAck: true,
-                                 consumer: consumer);
+            rabbitChannel.BasicConsume(queue: workQueue,
+                                       autoAck: true,
+                                       consumer: consumer);
 
-            await serviceHost.CancellationToken.WaitHandle.WaitOneAsync(CancellationToken.None);
+            await cancellationToken.WaitHandle.WaitOneAsync(CancellationToken.None);
+        }
+
+        protected override void Cleanup()
+        {
+            if (rabbitChannel != null)
+                rabbitChannel.Close(200, "Goodbye");
+
+            if (rabbitConnection != null)
+                rabbitConnection.Close();
         }
     }
 }
