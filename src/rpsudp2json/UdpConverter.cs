@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Text;
 
@@ -17,7 +18,7 @@ namespace RpsUdpToJson
             this.logger = logger;
         }
 
-        public  bool TryParseVehiclePosition(byte[] bytes, out VehiclePosition vehiclePositon)
+        public  bool TryParseVehiclePosition(byte[] bytes, [MaybeNullWhen(false)] out VehiclePosition? vehiclePositon)
         {
             try
             {

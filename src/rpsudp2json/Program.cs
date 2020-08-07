@@ -30,6 +30,7 @@ namespace RpsUdpToJson
                .AddTransient<UdpConverter>()
                .AddTransient<RpsUdpToJsonWorker>()
                .AddTransient<VehicleJourneyAssignmentLoaderWorker>()
+               .AddTransient<PersistentVehicleJourneyAssignmentWorker>()
                .AddSingleton<IVehicleJourneyAssignmentCache, InMemoryVehicleJourneyAssignmentCache>()
                .AddSingleton<Service>()
                .BuildServiceProvider();
@@ -43,9 +44,11 @@ namespace RpsUdpToJson
                 var environmentName = Environment.GetEnvironmentVariable("ENVIRONMENT");
 
                 var config = new ConfigurationBuilder()
-                   .SetBasePath(Path.GetDirectoryName(System.Reflection.Assembly.GetEntryAssembly().Location))
+                   .SetBasePath(Path.GetDirectoryName(System.Reflection.Assembly.GetEntryAssembly()!.Location))
                    .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
                    .AddJsonFile($"appsettings.{environmentName}.json", optional: true, reloadOnChange: true)
+                   .AddJsonFile("secrets.json", optional: true)
+                   .AddEnvironmentVariables("RPS_UDP2JSON")
                    .Build();
 
                 var servicesProvider = ConfigureServices(config);

@@ -1,17 +1,12 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.Azure.Cosmos.Table;
+
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
-using Newtonsoft.Json;
-
 using RabbitMQ.Client;
-using RabbitMQ.Client.Events;
 
 using VehicleTracker.Contracts;
 
@@ -19,16 +14,14 @@ namespace RpsUdpToJson
 {
     public class VehicleJourneyAssignmentLoaderWorker : RetryWorker
     {
-        private const string clouldTableName = "VehicleJourneyAssignment";
-
         private readonly Service serviceHost;
         private readonly ILogger<VehicleJourneyAssignmentLoaderWorker> logger;
         private readonly IConfiguration config;
         private readonly IVehicleJourneyAssignmentCache vehicleJourneyAssignmentCache;
 
-        private IConnection connection;
-        private IModel channel;
-        private EventingBasicConsumer consumer;
+        private ConnectionFactory? rabbitConnectionFactory;
+        private IConnection? rabbitConnection = null;
+        private IModel? rabbitChannel = null;
 
         public VehicleJourneyAssignmentLoaderWorker(Service serviceHost, ILogger<VehicleJourneyAssignmentLoaderWorker> logger, IConfiguration config, IVehicleJourneyAssignmentCache vehicleJourneyAssignmentCache)
             : base(serviceHost, logger)
@@ -37,66 +30,31 @@ namespace RpsUdpToJson
             this.logger = logger;
             this.config = config;
             this.vehicleJourneyAssignmentCache = vehicleJourneyAssignmentCache;
+        }
+
+        protected override void Configure()
+        {
+            try
+            {
+                var url = config.GetValue<string>("RabbitMQ:Url");
+                rabbitConnectionFactory = new ConnectionFactory() { Uri = new Uri(url) };
+            }
+            catch (Exception ex)
+            {
+                throw new ConfigurationException("Invalid configuration provided. Please confirm the RabbitMQ:Url configuration.", ex);
+            }
 
             WatchDogTimeout = TimeSpan.FromMinutes(30);
         }
 
-        private void InitialLoad()
+        protected override async Task Work(CancellationToken cancellationToken)
         {
-            /* Load initial data from clould storage */
-            CloudStorageAccount storageAccount;
-            try
-            {
-                var storageConnectionString = config.GetValue<string>("ClouldStorage:ConnectionString");
-                storageAccount = CloudStorageAccount.Parse(storageConnectionString);
-            }
-            catch (Exception ex)
-            {
-                logger.LogWarning(ex, "Invalid storage account information provided. Please confirm the ClouldStorage:ConnectionString configuration.");
-                throw;
-            }
-
-            CloudTableClient tableClient = storageAccount.CreateCloudTableClient(new TableClientConfiguration());
-
-            // Create the InsertOrReplace table operation
-            var table = tableClient.GetTableReference(clouldTableName);
-            TableContinuationToken token = null;
-            var entities = new List<DynamicTableEntity>();
-            do
-            {
-                var queryResult = table.ExecuteQuerySegmented(new TableQuery(), token);
-                entities.AddRange(queryResult.Results);
-                token = queryResult.ContinuationToken;
-            } while (token != null);
-
-            foreach (var item in entities)
-            {
-                var vehicleJourneyAssignment = new VehicleJourneyAssignment
-                {
-                    JourneyRef = item.Properties["JourneyRef"].StringValue,
-                    VehicleRef = item.Properties["VehicleRef"].StringValue,
-                    ValidFromUtc = item.Properties["ValidFromUtc"].DateTime.Value
-                };
-
-                if (item.Properties.TryGetValue("InvalidFromUtc", out var invalidFromUtc))
-                    vehicleJourneyAssignment.InvalidFromUtc = invalidFromUtc.DateTime;
-
-                vehicleJourneyAssignmentCache.Put(vehicleJourneyAssignment);
-            }
-        }
-
-        protected override async Task Work()
-        {
-            var url = config.GetValue<string>("RabbitMQ:Url");
-            logger.LogInformation($"Connecting to url: {url}");
-            var factory = new ConnectionFactory() { Uri = new Uri(url) };
-            connection = factory.CreateConnection();
-            channel = connection.CreateModel();
+            logger.LogInformation($"Connecting to RabbitMQ: {rabbitConnectionFactory.Uri}");
+            rabbitConnection = rabbitConnectionFactory.CreateConnection(nameof(PersistentVehicleJourneyAssignmentWorker));
+            rabbitChannel = rabbitConnection.CreateModel();
 
             // The incomming exchange of ROI events.
             var roiExchange = config.GetValue<string>("RabbitMQ:RoiExchange", "roi-json");
-            // The persistent queue is shared between workers, and coordinates persistent storage of vehicle assignments (in case of a single worker restarts).
-            var persistentQueue = config.GetValue("RabbitMQ:RoiPersistentQueue", "rpsudp2json-roi-json-persistent");
             // The work queue is a per worker queue to distribute vehicle assignments.
             var workQueue = config.GetValue("RabbitMQ:RoiWorkQueue", "rpsudp2json-roi-json-{machineName}").Replace("{machineName}", Environment.MachineName.ToLower());
 
@@ -104,44 +62,37 @@ namespace RpsUdpToJson
             {
                 { "x-message-ttl", 3 * 60 * 60 * 1000 } // 3 hours
             };
-            channel.QueueDeclare(persistentQueue, durable: true, exclusive: false, autoDelete: false, arguments);
-            channel.QueueDeclare(workQueue, durable: false, exclusive: true, autoDelete: true, arguments);
-            channel.QueueBind(persistentQueue, roiExchange, "vehicleJourneyAssignment.#");
-            channel.QueueBind(workQueue, roiExchange, "vehicleJourneyAssignment.#");
+            rabbitChannel.QueueDeclare(workQueue, durable: false, exclusive: true, autoDelete: true, arguments);
+            rabbitChannel.QueueBind(workQueue, roiExchange, "vehicleJourneyAssignment.#");
 
             var workerVehicleJourneyAssignmentConsumer = new EventConsumer<VehicleJourneyAssignmentEvent>(
-                action: e => vehicleJourneyAssignmentCache.Put(e.VehicleJourneyAssignment), 
+                action: e =>
+                {
+                    vehicleJourneyAssignmentCache.Put(e.VehicleJourneyAssignment);
+                    ResetWatchdog();
+                },
                 eventType: "vehicleJourneyAssignment",
                 logger: logger);
 
-            var persistentVehicleJourneyAssignmentQueue = new EventConsumer<VehicleJourneyAssignmentEvent>(
-                action: e => vehicleJourneyAssignmentCache.Put(e.VehicleJourneyAssignment),
-                eventType: "vehicleJourneyAssignment",
-                logger: logger);
+            // Wait for initial load to complete in PersistentVehicleJourneyAssignmentWorker
 
-            /* This load initial vehicle journey assignments off clould storage. */
-            try
-            {
-                InitialLoad();
-            }
-            catch
-            {
-                logger.LogWarning("Initial load of vehicle journey assignments failed. Continuing using only real-time data.");
-            }
+            logger.LogInformation($"Beginning to consume {workQueue}...");
 
-            logger.LogInformation($"Beginning to consume ...");
-
-            channel.BasicConsume(
-                queue: persistentQueue,
-                autoAck: true,
-                consumer: persistentVehicleJourneyAssignmentQueue);
-
-            channel.BasicConsume(
+            rabbitChannel.BasicConsume(
                 queue: workQueue,
                 autoAck: true,
                 consumer: workerVehicleJourneyAssignmentConsumer);
 
-            await serviceHost.CancellationToken.WaitHandle.WaitOneAsync(CancellationToken.None);
+            await cancellationToken.WaitHandle.WaitOneAsync(CancellationToken.None);
+        }
+
+        protected override void Cleanup()
+        {
+            if (rabbitChannel != null)
+                rabbitChannel.Close(200, "Goodbye");
+                
+            if (rabbitConnection != null)
+                rabbitConnection.Close();
         }
     }
 }

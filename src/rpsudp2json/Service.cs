@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -26,7 +27,7 @@ namespace RpsUdpToJson
             tasks = new List<Task>();
         }
 
-        private void AddWorker<T>(string name = null) where T : RetryWorker
+        private void AddWorker<T>(string? name = null) where T : RetryWorker
         {
             name ??= typeof(T).Name;
             logger.LogInformation($"Service is starting worker '{name}'");
@@ -38,6 +39,7 @@ namespace RpsUdpToJson
         public void Start()
         {
             logger.LogInformation("Service is starting.");
+            AddWorker<PersistentVehicleJourneyAssignmentWorker>();
             AddWorker<VehicleJourneyAssignmentLoaderWorker>();
             AddWorker<RpsUdpToJsonWorker>();
         }

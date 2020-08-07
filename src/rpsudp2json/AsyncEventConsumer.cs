@@ -13,24 +13,28 @@ namespace RpsUdpToJson
         private readonly Func<T, Task> action;
         private readonly ILogger logger;
         private readonly string eventTypeName;
+        private readonly JsonSerializerOptions jsonOptions = new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        };
 
-        public AsyncEventConsumer(Func<T, Task> action, ILogger logger)
+        public AsyncEventConsumer(Func<T, Task> action, string? eventType = null, ILogger? logger = null)
         {
             this.action = action;
-            this.logger = logger;
-            eventTypeName = LowerCamelCase(typeof(T).Name);
+            this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            eventTypeName = eventType ?? LowerCamelCase(typeof(T).Name);
         }
 
-        private string LowerCamelCase(string s) => Char.ToLowerInvariant(s[0]) + s.Substring(1);
+        private string LowerCamelCase(string s) => char.ToLowerInvariant(s[0]) + s.Substring(1);
 
-        public override async Task HandleBasicDeliver(string consumerTag, ulong deliveryTag, bool redelivered, string exchange, string routingKey, IBasicProperties properties, byte[] body)
+        public override async Task HandleBasicDeliver(string consumerTag, ulong deliveryTag, bool redelivered, string exchange, string routingKey, IBasicProperties properties, ReadOnlyMemory<byte> body)
         {
-            if (properties.Headers.TryGetValue("event_type", out object eventType) &&
-                string.Equals(Encoding.UTF8.GetString(eventType as byte[]), eventTypeName, StringComparison.OrdinalIgnoreCase))
+            if (properties.Headers.TryGetValue("event_type", out object? eventType) &&
+                string.Equals(Encoding.UTF8.GetString((byte[])eventType), eventTypeName, StringComparison.OrdinalIgnoreCase))
             {
                 try
                 {
-                    var eventObject = JsonSerializer.Deserialize<T>(body);
+                    var eventObject = JsonSerializer.Deserialize<T>(body.Span, jsonOptions);
 
                     if (eventObject == null)
                     {
@@ -43,7 +47,7 @@ namespace RpsUdpToJson
                 }
                 catch (JsonException ex)
                 {
-                    logger.LogWarning(ex, $"Failed to parse {eventTypeName}: {Encoding.UTF8.GetString(body)}");
+                    logger.LogWarning(ex, $"Failed to parse {eventTypeName}: {Encoding.UTF8.GetString(body.Span)}");
                 }
             }
         }

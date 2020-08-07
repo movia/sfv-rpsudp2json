@@ -1,7 +1,7 @@
 ﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-
+using System.Diagnostics.CodeAnalysis;
 using VehicleTracker.Contracts;
 
 namespace RpsUdpToJson
@@ -15,7 +15,7 @@ namespace RpsUdpToJson
             vehicleJourneyAssignmentCache = new ConcurrentDictionary<string, VehicleJourneyAssignment>(StringComparer.OrdinalIgnoreCase);
         }
 
-        public bool TryGet(string vehicleRef, out VehicleJourneyAssignment vehicleJourneyAssignment)
+        public bool TryGet(string vehicleRef, [MaybeNullWhen(false)] out VehicleJourneyAssignment? vehicleJourneyAssignment)
         {
             if (vehicleRef == null)
             {

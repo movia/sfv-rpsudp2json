@@ -15,7 +15,7 @@ namespace RpsUdpToJson
     public abstract class RetryWorker
     {
         private readonly ILogger logger;
-        private readonly CancellationToken cancellationToken;
+        private readonly Service serviceHost;
 
         public TimeSpan WatchDogWakeupInterval { get; protected set; } = TimeSpan.FromSeconds(5);
         public TimeSpan WatchDogTimeout { get; protected set; } = TimeSpan.FromSeconds(30);
@@ -23,21 +23,24 @@ namespace RpsUdpToJson
 
         private int retryAttempt = 0;
         private readonly Stopwatch watchDogTimer = new Stopwatch();
-        private ManualResetEventSlim manualRestart;
+        private ManualResetEventSlim? manualRestart;
 
         public RetryWorker(Service serviceHost, ILogger logger)
         {
             this.logger = logger;
-            this.cancellationToken = serviceHost.CancellationToken;
+            this.serviceHost = serviceHost;
         }
 
-        protected abstract Task Work();
+        protected virtual void Configure() { }
 
-        private async Task WatchDog()
+        protected abstract Task Work(CancellationToken cancellationToken);
+
+        private async Task WatchDog(CancellationToken cancellationToken)
         {
             while (!cancellationToken.IsCancellationRequested)
-            {               
+            {
                 /* Wait for manual reset event, or for watchdog timer to check message age. */
+                manualRestart = new ManualResetEventSlim();
                 var restart = await manualRestart.WaitHandle.WaitOneAsync(WatchDogWakeupInterval, cancellationToken);
 
                 if (restart)
@@ -55,17 +58,35 @@ namespace RpsUdpToJson
 
         public async Task RetryWork()
         {
-            while (!cancellationToken.IsCancellationRequested)
+            try
+            {
+                Configure();
+            }
+            catch (Exception ex)
+            {
+                // We are likely not to recover from this exception. Stop service.
+                logger.LogError(ex, "Applicaiton is not configured. Stopping service.");
+                serviceHost.Stop();
+                return;
+            }
+
+            while (!serviceHost.CancellationToken.IsCancellationRequested)
             {
                 TimeSpan delay = TimeSpan.Zero;
 
                 try
                 {
+                    var retryCancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(serviceHost.CancellationToken);
                     watchDogTimer.Restart();
-                    manualRestart = new ManualResetEventSlim();
-                    
-                    var task = await Task.WhenAny(Work(), WatchDog());
-                    await task; // In order to throw any exceptions from the task that terminated first.
+                                        
+                    var workTask = Work(retryCancellationTokenSource.Token);
+                    var watchDogTask = WatchDog(retryCancellationTokenSource.Token);
+                    // Wait for either worker or watch dog to finish
+                    var task = await Task.WhenAny(workTask, watchDogTask);
+                    retryCancellationTokenSource.Cancel(); // Cancel the tasks
+                    // In order to throw any exceptions from the tasks.
+                    await workTask;
+                    await watchDogTask;
                 }
                 catch (TaskCanceledException)
                 {

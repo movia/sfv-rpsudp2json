@@ -12,3 +12,4 @@
 dist/
 [Bb]in/
 [Oo]bj/
+src/rpsudp2json/secrets.json
