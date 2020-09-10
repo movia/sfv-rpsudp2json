@@ -60,6 +60,9 @@ namespace RpsUdpToJson
 
         protected override async Task Work(CancellationToken cancellationToken)
         {
+            if (rabbitConnectionFactory == null)
+                throw new InvalidOperationException("Worker not configured.");
+
             logger.LogInformation($"Connecting to RabbitMQ: {rabbitConnectionFactory.Uri}");
             rabbitConnection = rabbitConnectionFactory.CreateConnection(nameof(RpsUdpToJsonWorker));
             rabbitChannel = rabbitConnection.CreateModel();
@@ -72,6 +75,7 @@ namespace RpsUdpToJson
             rabbitChannel.QueueDeclare(workQueue, durable: true, exclusive: false, autoDelete: false, arguments);
             rabbitChannel.QueueBind(workQueue, udpExchange, string.Empty);
 
+            var serverCancel = new CancellationTokenSource();
             consumer = new EventingBasicConsumer(rabbitChannel);
             consumer.Received += (model, ea) =>
             {
@@ -108,12 +112,15 @@ namespace RpsUdpToJson
             };
 
             logger.LogInformation($"Beginning to consume {workQueue}...");
-
+            consumer.Shutdown += (model, ea) =>
+            {
+                serverCancel.Cancel();
+            };
             rabbitChannel.BasicConsume(queue: workQueue,
                                        autoAck: true,
                                        consumer: consumer);
 
-            await cancellationToken.WaitHandle.WaitOneAsync(CancellationToken.None);
+            await cancellationToken.WaitHandle.WaitOneAsync(serverCancel.Token);
         }
 
         protected override void Cleanup()
